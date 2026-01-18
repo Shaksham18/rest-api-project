@@ -3,25 +3,36 @@ from flask_smorest import Blueprint, abort
 from blocklist import BLOCKLIST
 from db import db
 from models.user import UserModel
-from schema import UserSchema
+from schema import UserSchema, UserRegisterSchema
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy import or_
 from passlib.hash import pbkdf2_sha256
+from resources.task import send_user_registration_email
+from flask import current_app
 from flask_jwt_extended import create_access_token, get_jwt, jwt_required, create_refresh_token, get_jwt_identity
 
 blp = Blueprint("users", __name__, description="Operations on users")
 
+
 @blp.route('/register')
 class UserRegister(MethodView):
-    @blp.arguments(UserSchema)
-    @blp.response(201, UserSchema)
+    @blp.arguments(UserRegisterSchema)
+    @blp.response(201, UserRegisterSchema)
     def post(self, user_data):
-        if UserModel.query.filter_by(username=user_data['username']).first():
-            abort(400, message="A user with that username already exists.")
+        if UserModel.query.filter(
+            or_(
+                UserModel.username == user_data['username'],
+                UserModel.email == user_data['email']
+            )
+        ).first():
+            abort(400, message="A user with that username or email already exists.")
         hashed_password = pbkdf2_sha256.hash(user_data['password'])
-        user = UserModel(username=user_data['username'], password=hashed_password)
+        user = UserModel(username=user_data['username'], email=user_data['email'], password=hashed_password)
         try:
             db.session.add(user)
             db.session.commit()
+            print("Sending email...")
+            current_app.queue.enqueue("resources.task.send_user_registration_email", user.username, user.email)
         except SQLAlchemyError as e:
             abort(500, message=str(e))
         return user
